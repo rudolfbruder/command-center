@@ -1,0 +1,215 @@
+version: '3.7'
+services:
+    db:
+        image: 'mariadb:10'
+        container_name: mariadb
+        ports:
+            - '${FORWARD_DB_PORT:-3306}:3306'
+        expose:
+            - ${FORWARD_DB_PORT:-3306}
+        environment:
+            MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
+            MYSQL_ROOT_HOST: '%'
+            MYSQL_DATABASE: '${DB_DATABASE}'
+            MYSQL_USER: '${DB_USERNAME}'
+            MYSQL_PASSWORD: '${DB_PASSWORD}'
+            MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+        volumes:
+            - 'mariadb-eshop:/var/lib/mysql'
+            - ./docker/dumps:/tmp/dumps
+        networks:
+            - command-center
+        healthcheck:
+            test: ['CMD', 'mysqladmin', 'ping', '-p${DB_PASSWORD}']
+            retries: 3
+            timeout: 5s
+
+    phpmyadmin:
+        image: 'phpmyadmin:latest'
+        ports:
+            - ${PHPMYADMIN_PORT:-8081}:80
+        environment:
+            MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
+        volumes:
+            - './docker/phpmyadmin/config.inc.php:/etc/phpmyadmin/config.inc.php'
+        links:
+            - 'db:db'
+        networks:
+            - command-center
+
+    redis:
+        image: 'redis:alpine'
+        container_name: redis
+        ports:
+            - '${FORWARD_REDIS_PORT:-6379}:6379'
+        volumes:
+            - 'redis-eshop:/data'
+        networks:
+            - command-center
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            retries: 3
+            timeout: 5s
+
+    # redisinsight:
+    #     image: 'redislabs/redisinsight:latest'
+    #     container_name: redisinsight
+    #     volumes:
+    #         - 'redisinsight-eshop:/db'
+    #     ports:
+    #         - '${FORWARD_REDIS_INSIGHT_PORT:-8003}:8001'
+    #     networks:
+    #         - eshop
+
+    setup:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.7.0
+        volumes:
+            - ./docker/elasticsearch/certs:/usr/share/elasticsearch/config/certs
+        user: '0'
+        networks:
+            - command-center
+        command: >
+            bash -c '
+              if [ x${ELASTIC_PASSWORD} == x ]; then
+                echo "Set the ELASTIC_PASSWORD environment variable in the .env file";
+                exit 1;
+              elif [ x${KIBANA_PASSWORD} == x ]; then
+                echo "Set the KIBANA_PASSWORD environment variable in the .env file";
+                exit 1;
+              fi;
+
+              if [ ! -f config/certs/ca.zip ]; then
+                echo "Creating CA";
+                bin/elasticsearch-certutil ca --silent --pem -out config/certs/ca.zip;
+                unzip config/certs/ca.zip -d config/certs;
+              fi;
+              if [ ! -f config/certs/certs.zip ]; then
+                echo "Creating certs";
+                echo -ne \
+                "instances:\n"\
+                "  - name: elasticsearch\n"\
+                "    dns:\n"\
+                "      - elasticsearch\n"\
+                "      - localhost\n"\
+                "    ip:\n"\
+                "      - 127.0.0.1\n"\
+                > config/certs/instances.yml;
+                bin/elasticsearch-certutil cert --silent --pem -out config/certs/certs.zip --in config/certs/instances.yml --ca-cert config/certs/ca/ca.crt --ca-key config/certs/ca/ca.key;
+                unzip config/certs/certs.zip -d config/certs;
+              fi;
+
+              echo "Waiting for Elasticsearch availability";
+              until curl -s --cacert /usr/share/elasticsearch/config/certs/ca/ca.crt https://elasticsearch:9200 | grep -q "missing authentication credentials"; do sleep 2; done;
+              echo "Setting kibana_system password";
+              until curl -s -X POST --cacert /usr/share/elasticsearch/config/certs/ca/ca.crt -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" https://elasticsearch:9200/_security/user/kibana_system/_password -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 10; done;
+              echo "All done!";
+              echo "$PWD";
+            '
+        healthcheck:
+            # https://www.elastic.co/guide/en/elasticsearch/reference/current/docker.html
+            #    test: ["CMD-SHELL", "[ -f config/certs/es01/es01.crt ]"]
+            #   test: ["CMD-SHELL", "test -f /usr/share/elasticsearch/config/certificates/elasticsearch/elasticsearch.crt"]
+            test: ['CMD-SHELL', "echo 'TODO'"]
+            interval: 1s
+            timeout: 3s
+            retries: 3
+
+    copy-elastic-certs:
+        depends_on:
+            setup:
+                condition: service_healthy
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.7.0
+        container_name: elasticsearch-certificates
+        volumes:
+            - ./docker/elasticsearch/certs:/tmp/certs
+            - ./storage/app/private/elastic:/tmp/storage
+        networks:
+            - command-center
+        command: >
+            bash -c '
+              cp /tmp/certs/ca/ca.crt /tmp/storage/ca.crt
+              cp /tmp/certs/ca/ca.key /tmp/storage/ca.key
+            '
+
+    elasticsearch:
+        depends_on:
+            setup:
+                condition: service_healthy
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.7.0
+        container_name: elasticsearch
+        environment:
+            - node.name=elasticsearch
+            - discovery.type=single-node
+            - bootstrap.memory_lock=true
+            - ELASTIC_PASSWORD=$ELASTIC_PASSWORD
+            - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
+            - xpack.license.self_generated.type=trial
+            - xpack.security.enabled=true
+            - xpack.security.http.ssl.enabled=true
+            - xpack.security.http.ssl.key=$CERTS_DIR/elasticsearch/elasticsearch.key
+            - xpack.security.http.ssl.certificate_authorities=$CERTS_DIR/ca/ca.crt
+            - xpack.security.http.ssl.certificate=$CERTS_DIR/elasticsearch/elasticsearch.crt
+            - xpack.security.transport.ssl.enabled=true
+            - xpack.security.transport.ssl.verification_mode=certificate
+            - xpack.security.transport.ssl.certificate_authorities=$CERTS_DIR/ca/ca.crt
+            - xpack.security.transport.ssl.certificate=$CERTS_DIR/elasticsearch/elasticsearch.crt
+            - xpack.security.transport.ssl.key=$CERTS_DIR/elasticsearch/elasticsearch.key
+        ulimits:
+            memlock:
+                soft: -1
+                hard: -1
+        # dns:
+            # - elasticsearch
+            # - localhost
+        volumes:
+            - elasticsearch-eshop-data:/usr/share/elasticsearch/data
+            - ./docker/elasticsearch/certs:$CERTS_DIR
+            - ./docker/elasticsearch/hunspell:/usr/share/elasticsearch/config/hunspell/
+            - ./storage/app/private/elastic:/usr/share/elasticsearch/config/wordfiles/
+        ports:
+            - 9200:9200
+        networks:
+            - command-center
+        healthcheck:
+            test: curl --cacert $CERTS_DIR/ca/ca.crt -s https://elasticsearch:9200 >/dev/null; if [[ $$? == 52 ]]; then echo 0; else echo 1; fi
+            interval: 11s
+            timeout: 4s
+            retries: 3
+
+    kibana:
+        depends_on:
+            elasticsearch:
+                condition: service_healthy
+        image: docker.elastic.co/kibana/kibana:8.7.0
+        container_name: kibana
+        ports:
+            - 5601:5601
+        environment:
+            - ELASTICSEARCH_URL=https://elasticsearch:9200
+            - ELASTICSEARCH_HOSTS=https://elasticsearch:9200
+            - ELASTICSEARCH_USERNAME=kibana_system
+            - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+            - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/usr/share/kibana/config/certs/ca/ca.crt
+        volumes:
+            - ./docker/elasticsearch/certs:/usr/share/kibana/config/certs
+        networks:
+            - command-center
+    selenium:
+      image: selenium/standalone-chrome:3.11.0-antimony
+      volumes:
+          - /dev/shm:/dev/shm
+      networks:
+          - command-center
+
+networks:
+    command-center:
+        driver: bridge
+volumes:
+    elasticsearch-eshop-data:
+        driver: local
+    mariadb-eshop:
+        driver: local
+    redis-eshop:
+        driver: local
+    certs:
+        driver: local
