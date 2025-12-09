@@ -11,9 +11,10 @@ declare(strict_types=1);
 
 /**
  * This is needed for cookie based authentication to encrypt password in
- * cookie. Needs to be 32 chars long.
+ * cookie. Needs to be 32 chars long. Set PMA_BLOWFISH_SECRET in your .env
+ * for a unique local value; fallback is dev-only.
  */
-$cfg['blowfish_secret'] = ''; /* YOU MUST FILL IN THIS FOR COOKIE AUTH! */
+$cfg['blowfish_secret'] = getenv('PMA_BLOWFISH_SECRET') ?: '0123456789abcdef0123456789abcdef';
 
 /**
  * Servers configuration

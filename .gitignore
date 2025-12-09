@@ -1,2 +1,4 @@
 .env
 storage/
+docker/elasticsearch/certs/
+docker/dumps/*.sql

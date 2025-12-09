@@ -2,6 +2,12 @@
 
 This repo ships a `docker-compose.yaml` that spins up the full local stack used by the project: MariaDB + phpMyAdmin, Redis, Elasticsearch (with TLS cert bootstrapping), Kibana, and a Selenium Chrome node.
 
+## Dev-only usage and safety
+- This stack is for local development only. It assumes you supply your own `.env` with non-production credentials.
+- Generated Elasticsearch certs and keys are not committed and are gitignored (`docker/elasticsearch/certs/`). They will be created on first `docker compose up`.
+- Keep any database dumps scrubbed; `docker/dumps/*.sql` is gitignored to avoid leaking data.
+- phpMyAdmin uses a dev-friendly configuration; set `PMA_BLOWFISH_SECRET` in `.env` to avoid cookie auth warnings.
+
 ## Prerequisites
 - Docker Desktop or Docker Engine + Compose v2
 - A populated `.env` in the repo root with the variables referenced below
@@ -9,6 +15,7 @@ This repo ships a `docker-compose.yaml` that spins up the full local stack used 
 ## Environment variables used by `docker-compose.yaml`
 - Database: `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `FORWARD_DB_PORT` (defaults to 3306)
 - phpMyAdmin: `PHPMYADMIN_PORT` (defaults to 8081)
+- phpMyAdmin cookie encryption: `PMA_BLOWFISH_SECRET` (32-char random string; optional but recommended)
 - Redis: `FORWARD_REDIS_PORT` (defaults to 6379)
 - Elasticsearch/Kibana TLS + auth: `ELASTIC_PASSWORD`, `KIBANA_PASSWORD`, `CERTS_DIR` (mount target for generated certs)
 
@@ -36,9 +43,10 @@ This repo ships a `docker-compose.yaml` that spins up the full local stack used 
    - Kibana: https://localhost:5601 (use `kibana_system` / `${KIBANA_PASSWORD}`)
 
 ## Notes on cert generation
-- The `setup` service runs first and creates a CA plus node certificates in `docker/elasticsearch/certs`.
+- The repo does not ship certs; `docker/elasticsearch/certs/` is empty and gitignored.
+- The `setup` service runs first and creates a CA plus node certificates in `docker/elasticsearch/certs` on first run.
 - `copy-elastic-certs` then copies `ca.crt` and `ca.key` into `storage/app/private/elastic` for downstream use.
-- Do not delete the certs volume or files unless you plan to regenerate credentials.
+- If you need to regenerate, delete the local `docker/elasticsearch/certs` contents and rerun `docker compose up`.
 
 ## Maintenance commands
 - Stop the stack: `docker compose down`
