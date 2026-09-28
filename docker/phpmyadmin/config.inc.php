@@ -29,7 +29,7 @@ $i++;
 // $cfg['Servers'][$i]['auth_type'] = 'cookie';
 $cfg['Servers'][$i]['auth_type'] = 'config'; //change cookie for config
 $cfg['Servers'][$i]['username'] = 'root'; //add this line
-$cfg['Servers'][$i]['password'] = ''; //add this line
+$cfg['Servers'][$i]['password'] = getenv('PMA_PASSWORD') ?: ''; // DB_PASSWORD, passed in by docker-compose
 /* Server parameters */
 $cfg['Servers'][$i]['host'] = 'db';
 $cfg['Servers'][$i]['compress'] = false;
